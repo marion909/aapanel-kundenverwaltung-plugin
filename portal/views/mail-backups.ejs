@@ -30,7 +30,7 @@
     <% list.forEach(function (b) { %>
       <tr>
         <td><%= fmttime(b.created_at) %></td>
-        <td><%= b.kind === 'auto' ? 'automatisch' : 'manuell' %></td>
+        <td><%= b.kind === 'auto' ? 'automatisch' : b.kind === 'delete' ? 'vor Löschung' : 'manuell' %></td>
         <td>
           <% if (b.status === 'queued') { %><span class="badge off">wartet</span>
           <% } else if (b.status === 'running') { %><span class="badge warn">läuft<%= b.messages ? ' · ' + b.messages + ' Nachrichten' : '' %></span>

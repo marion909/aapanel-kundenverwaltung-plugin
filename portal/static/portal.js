@@ -11,6 +11,40 @@
     });
   }
 
+  // Postfach löschen: Modal, in dem die E-Mail-Adresse zur Bestätigung eingetippt werden muss
+  var delModal = document.getElementById('delete-modal');
+  if (delModal) {
+    var delInput = document.getElementById('delete-modal-input');
+    var delConfirm = document.getElementById('delete-modal-confirm');
+    var delPending = null;
+    var delMatches = function () { return delPending && delInput.value.trim().toLowerCase() === delPending.address.toLowerCase(); };
+    var delClose = function () { delModal.hidden = true; delPending = null; };
+    delInput.addEventListener('input', function () { delConfirm.disabled = !delMatches(); });
+    document.getElementById('delete-modal-cancel').addEventListener('click', delClose);
+    delModal.addEventListener('click', function (ev) { if (ev.target === delModal) { delClose(); } });
+    document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && !delModal.hidden) { delClose(); } });
+    delInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); if (delMatches()) { delConfirm.click(); } }
+    });
+    delConfirm.addEventListener('click', function () {
+      if (!delMatches()) { return; }
+      delPending.form.elements.confirm_email.value = delInput.value.trim();
+      delConfirm.disabled = true;
+      delPending.form.submit();
+    });
+    document.addEventListener('click', function (ev) {
+      var b = ev.target.closest && ev.target.closest('form[data-delete-address] button[type="submit"]');
+      if (!b) { return; }
+      ev.preventDefault();
+      delPending = { form: b.form, address: b.form.getAttribute('data-delete-address') };
+      document.getElementById('delete-modal-address').textContent = delPending.address;
+      delInput.value = '';
+      delConfirm.disabled = true;
+      delModal.hidden = false;
+      delInput.focus();
+    });
+  }
+
   function checked(form) {
     return Array.prototype.slice.call(form.querySelectorAll('input[name="paths"]:checked'));
   }

@@ -54,8 +54,9 @@
       <button type="submit">Passwort ändern</button>
     </form>
     <% } %>
-    <form method="post" action="/mail/boxes/<%= b.id %>/delete" data-confirm="Postfach „<%= b.ref_name %>“ wirklich löschen?">
+    <form method="post" action="/mail/boxes/<%= b.id %>/delete" data-delete-address="<%= b.ref_name %>">
       <input type="hidden" name="csrf_token" value="<%= csrfToken %>">
+      <input type="hidden" name="confirm_email" value="">
       <button type="submit" class="danger">Löschen</button>
     </form>
   </td>
@@ -64,4 +65,17 @@
 </tbody>
 </table>
 <% } %>
+<div class="modal-backdrop" id="delete-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+    <h2 id="delete-modal-title">Postfach löschen</h2>
+    <p>Das Postfach <strong id="delete-modal-address"></strong> wird gelöscht. Vorher wird automatisch eine Sicherung angelegt und 30 Tage lang auf dem Server aufbewahrt.</p>
+    <label>Zur Bestätigung die E-Mail-Adresse eingeben
+      <input type="text" id="delete-modal-input" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <div class="modal-actions">
+      <button type="button" id="delete-modal-cancel">Abbrechen</button>
+      <button type="button" id="delete-modal-confirm" class="danger" disabled>Endgültig löschen</button>
+    </div>
+  </div>
+</div>
 <%- include('partials/footer') %>

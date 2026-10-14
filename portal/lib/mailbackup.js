@@ -19,6 +19,7 @@ const { ValidationError } = require('./validate');
 
 const MANUAL_KEEP = 3; // manuelle Sicherungen pro Postfach
 const MANUAL_MAX_DAYS = 30;
+const DELETE_KEEP_DAYS = 30; // Sicherung vor dem Löschen eines Postfachs
 const AUTO_GRACE_DAYS = 7; // Paket ohne automatische Sicherung: alte Auto-Sicherungen noch so lange behalten
 const ERROR_KEEP_DAYS = 7;
 const DAY = 86400;
@@ -132,6 +133,32 @@ class MailBackups {
     }
     this.db.prepare("UPDATE mail_backups SET restore_status='queued', restore_error='' WHERE id=?").run(row.id);
     this.kick();
+  }
+
+  // Sicherung unmittelbar vor dem Löschen eines Postfachs. Läuft synchron (nicht über die
+  // Warteschlange), unabhängig vom Paket, und wird DELETE_KEEP_DAYS Tage aufbewahrt - auch
+  // nachdem das Postfach nicht mehr zugeordnet ist. Liefert die Sicherungs-ID, oder null, wenn
+  // es noch nichts zu sichern gibt (Postfach-Verzeichnis existiert erst mit der ersten Nachricht).
+  // Wirft ValidationError, wenn die Sicherung fehlschlägt - dann darf nicht gelöscht werden.
+  async backupBeforeDelete(customer, mailbox) {
+    const mb = String(mailbox).toLowerCase();
+    try {
+      maildir.mailboxDir(mb, this.vmailRoot);
+    } catch (e) {
+      if (e instanceof ValidationError && /existiert/.test(e.message)) return null;
+      throw e;
+    }
+    const id = this.db
+      .prepare("INSERT INTO mail_backups (customer_id, mailbox, kind, status, created_at) VALUES (?,?, 'delete', 'running', ?)")
+      .run(customer.id, mb, now()).lastInsertRowid;
+    await this.runBackup(this.db.prepare('SELECT * FROM mail_backups WHERE id=?').get(id));
+    const row = this.db.prepare('SELECT * FROM mail_backups WHERE id=?').get(id);
+    if (!row || row.status !== 'done') {
+      const why = row && row.error ? ` (${row.error})` : '';
+      if (row) this.drop(row);
+      throw new ValidationError(`Die Sicherung vor dem Löschen ist fehlgeschlagen${why} – das Postfach wurde nicht gelöscht.`);
+    }
+    return id;
   }
 
   remove(cid, id) {
@@ -340,6 +367,11 @@ class MailBackups {
       if (!customers.has(r.customer_id)) customers.set(r.customer_id, this.store.getCustomer(r.customer_id));
       const c = customers.get(r.customer_id);
       const age = t - r.created_at;
+      // Sicherung vor dem Löschen: unabhängig von der Zuordnung fest N Tage aufbewahren
+      if (r.kind === 'delete') {
+        if (age > DELETE_KEEP_DAYS * DAY) doomed.push(r);
+        continue;
+      }
       // Kunde gelöscht oder Postfach nicht mehr zugeordnet: Daten nicht aufheben
       if (!c || !this.store.isAssigned(r.customer_id, 'mailbox', r.mailbox)) {
         doomed.push(r);

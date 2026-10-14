@@ -287,3 +287,42 @@ test('Portal: Sicherungsseite, Download und fremde Sicherungen', async () => {
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test('Sicherung vor dem Löschen: unabhängig vom Paket, bleibt 30 Tage auch ohne Zuordnung', async () => {
+  const svc = service();
+  const c = customer(svc.store, 'K-30020', { allowed: 0 });
+  makeMailbox('weg@loesch.at');
+  svc.store.assign(c.id, [{ type: 'mailbox', ref_name: 'weg@loesch.at' }]);
+
+  const id = await svc.backupBeforeDelete(c, 'weg@loesch.at');
+  const row = svc.get(c.id, id);
+  assert.equal(row.status, 'done', row.error);
+  assert.equal(row.kind, 'delete');
+  assert.equal(row.messages, 3);
+
+  // Postfach wird gelöscht (nicht mehr zugeordnet): die Sicherung muss das Aufräumen überleben
+  svc.store.db.prepare("DELETE FROM assignments WHERE ref_name='weg@loesch.at'").run();
+  const t = Math.floor(Date.now() / 1000);
+  svc.prune(t + 29 * 86400);
+  assert.ok(svc.get(c.id, id), 'nach 29 Tagen noch vorhanden');
+  assert.ok(fs.existsSync(svc.filePath(row)));
+  svc.prune(t + 31 * 86400);
+  assert.equal(svc.get(c.id, id), null, 'nach 31 Tagen entfernt');
+  assert.ok(!fs.existsSync(svc.filePath(row)), 'Datei entfernt');
+});
+
+test('Sicherung vor dem Löschen: Postfach ohne Verzeichnis -> nichts zu sichern', async () => {
+  const svc = service();
+  const c = customer(svc.store, 'K-30021', { days: 1 });
+  svc.store.assign(c.id, [{ type: 'mailbox', ref_name: 'neu@loesch.at' }]);
+  assert.equal(await svc.backupBeforeDelete(c, 'neu@loesch.at'), null);
+});
+
+test('Sicherung vor dem Löschen: schlägt sie fehl, wird abgebrochen und nichts bleibt liegen', async () => {
+  const svc = service();
+  const c = customer(svc.store, 'K-30022', { days: 1 });
+  makeMailbox('fehler@loesch.at');
+  // nicht zugeordnet -> runBackup scheitert
+  await assert.rejects(svc.backupBeforeDelete(c, 'fehler@loesch.at'), /nicht gelöscht/);
+  assert.equal(svc.list(c.id, 'fehler@loesch.at').length, 0);
+});

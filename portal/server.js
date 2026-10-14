@@ -36,6 +36,7 @@ const MAX_ATTEMPTS_PER_IP = 20;
 const cache = new resources.ResourceCache();
 // Postfach-Sicherungen: eigene DB-Verbindung, Abarbeitung im Hintergrund
 const { MailBackups } = require('./lib/mailbackup');
+const { ValidationError } = require('./lib/validate');
 const mailBackups = new MailBackups();
 
 class HttpError extends Error {
@@ -344,18 +345,32 @@ app.post(
   loginRequired,
   asyncHandler(async (req, res) => {
     const row = ownedAssignment(req, Number(req.params.id), 'mailbox');
+    if (String((req.body && req.body.confirm_email) || '').trim().toLowerCase() !== row.ref_name.toLowerCase()) {
+      flash(req, 'Die E-Mail-Adresse zur Bestätigung stimmt nicht überein. Das Postfach wurde nicht gelöscht.', 'error');
+      return res.redirect('/mail');
+    }
     const domain = row.ref_name.split('@').pop();
     const cfg = store.loadCfg();
     const api = resources.makeApi(cfg);
+    // Vor dem Löschen automatisch sichern (30 Tage aufbewahrt); schlägt das fehl, wird nicht gelöscht
+    let backupId;
+    try {
+      backupId = await mailBackups.backupBeforeDelete(req.customer, row.ref_name);
+    } catch (e) {
+      if (!(e instanceof ValidationError)) throw e;
+      flash(req, e.message, 'error');
+      return res.redirect('/mail');
+    }
     try {
       await api.mailBoxDelete(resources.mailPluginPaths(cfg), cfg.mail_box_delete_method, domain, row.ref_name);
     } catch (e) {
+      if (backupId) mailBackups.remove(req.customer.id, backupId);
       flash(req, e.message, 'error');
       return res.redirect('/mail');
     }
     req.store.unassign(Number(req.params.id));
     cache.invalidate();
-    flash(req, `Postfach „${row.ref_name}“ wurde gelöscht.`);
+    flash(req, `Postfach „${row.ref_name}“ wurde gelöscht.` + (backupId ? ' Eine Sicherung bleibt 30 Tage auf dem Server erhalten.' : ''));
     res.redirect('/mail');
   })
 );

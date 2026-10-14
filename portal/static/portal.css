@@ -235,6 +235,16 @@ code { background: var(--bg); border: 1px solid var(--border); border-radius: 4p
 }
 @media (max-width: 700px) { table.files td.cb, table.files th.cb { width: 24px; } table.files th:nth-child(4), table.files td:nth-child(4), table.files th:nth-child(5), table.files td:nth-child(5) { display: none; } }
 
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex;
+  align-items: center; justify-content: center; padding: 16px; z-index: 100;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 24px; width: 100%; max-width: 440px; }
+.modal h2 { margin-top: 0; color: var(--danger); }
+.modal p { font-size: 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14181d; --panel: #1c222a; --text: #e7ebee; --muted: #8b96a3; --border: #2b333c;
