@@ -288,3 +288,74 @@ class MainTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PostfixTlsTest(unittest.TestCase):
+    def cfg(self, **checks):
+        p = configparser.ConfigParser(interpolation=None)
+        p.read(EXAMPLE, encoding='utf-8')
+        p.set('checks', 'tls', 'yes')
+        for k, v in checks.items():
+            p.set('checks', k, str(v))
+        return mm.Config(p)
+
+    def test_log_scan_counts_only_recent_lines(self):
+        now = 1_800_000_000.0
+        import time as _t
+        def stamp(age_min):
+            return _t.strftime('%b %e %H:%M:%S', _t.localtime(now - age_min * 60))
+        with tempfile.NamedTemporaryFile('w', suffix='.log', delete=False) as f:
+            f.write('%s h postfix/smtpd[1]: warning: error opening chain file: /x.key: No such file\n' % stamp(5))
+            f.write('%s h postfix/smtpd[1]: warning: error opening chain file: /x.key: No such file\n' % stamp(300))
+            f.write('%s h postfix/smtpd[1]: warning: TLS library problem: error:0A000076:SSL routines::no suitable signature algorithm\n' % stamp(10))
+            f.write('%s h postfix/smtpd[1]: connect from x\n' % stamp(1))
+            path = f.name
+        try:
+            self.assertEqual(mm.scan_tls_log(path, 60, now), (1, 1))
+            self.assertEqual(mm.scan_tls_log(path, 600, now), (2, 1))
+        finally:
+            os.unlink(path)
+
+    def test_iso_timestamps(self):
+        now = 1_800_000_000.0
+        import time as _t
+        line = _t.strftime('%Y-%m-%dT%H:%M:%S', _t.localtime(now - 120)) + '.123+00:00 h postfix/smtpd: x'
+        self.assertAlmostEqual(mm._log_time(line, now), now - 120, delta=1)
+
+    def test_missing_chain_file_is_critical(self):
+        with mock.patch.object(mm, 'postfix_chain_files', return_value=['/nope/snakeoil.key']), \
+             mock.patch.object(mm, 'tls_handshake_no_sni', return_value=(None, 90.0, True)), \
+             mock.patch.object(mm, '_LOG_CANDIDATES', ()):
+            r = mm.check_postfix_tls(self.cfg())
+        self.assertEqual(r.status, mm.FAIL)
+        self.assertIn('/nope/snakeoil.key', r.message)
+
+    def test_handshake_failure_is_critical(self):
+        with mock.patch.object(mm, 'postfix_chain_files', return_value=[]), \
+             mock.patch.object(mm, 'tls_handshake_no_sni', return_value=('Handshake ohne SNI liefert kein Zertifikat', None, None)), \
+             mock.patch.object(mm, '_LOG_CANDIDATES', ()):
+            self.assertEqual(mm.check_postfix_tls(self.cfg()).status, mm.FAIL)
+
+    def test_expiry_thresholds(self):
+        def run(days):
+            with mock.patch.object(mm, 'postfix_chain_files', return_value=[]), \
+                 mock.patch.object(mm, 'tls_handshake_no_sni', return_value=(None, days, True)), \
+                 mock.patch.object(mm, '_LOG_CANDIDATES', ()):
+                return mm.check_postfix_tls(self.cfg()).status
+        self.assertEqual(run(60), mm.OK)
+        self.assertEqual(run(10), mm.WARN)
+        self.assertEqual(run(3), mm.FAIL)
+        self.assertEqual(run(-1), mm.FAIL)
+
+    def test_unverifiable_chain_is_warning(self):
+        with mock.patch.object(mm, 'postfix_chain_files', return_value=[]), \
+             mock.patch.object(mm, 'tls_handshake_no_sni', return_value=(None, 90.0, False)), \
+             mock.patch.object(mm, '_LOG_CANDIDATES', ()):
+            self.assertEqual(mm.check_postfix_tls(self.cfg()).status, mm.WARN)
+
+    def test_remote_host_skips_file_and_log_checks(self):
+        with mock.patch.object(mm, 'postfix_chain_files') as pc, \
+             mock.patch.object(mm, 'tls_handshake_no_sni', return_value=(None, 90.0, True)):
+            r = mm.check_postfix_tls(self.cfg(tls_host='mail.example.com'))
+        pc.assert_not_called()
+        self.assertEqual(r.status, mm.OK)

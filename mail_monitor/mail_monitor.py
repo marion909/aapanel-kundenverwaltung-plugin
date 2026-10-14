@@ -93,6 +93,14 @@ DEFAULTS = {
         'queue_warn': '20',
         'queue_fail': '100',
         'queue_command': '',
+        'tls': 'no',
+        'tls_host': '127.0.0.1',
+        'tls_port': '25',
+        'tls_warn_days': '21',
+        'tls_crit_days': '7',
+        'tls_log': '',
+        'tls_log_minutes': '60',
+        'tls_sigalg_warn': '20',
     },
 }
 
@@ -164,6 +172,14 @@ class Config(object):
         self.queue_warn = c.getint('queue_warn')
         self.queue_fail = c.getint('queue_fail')
         self.queue_command = c.get('queue_command').strip()
+        self.check_tls = c.getboolean('tls')
+        self.tls_host = c.get('tls_host').strip() or '127.0.0.1'
+        self.tls_port = c.getint('tls_port')
+        self.tls_warn_days = c.getint('tls_warn_days')
+        self.tls_crit_days = c.getint('tls_crit_days')
+        self.tls_log = c.get('tls_log').strip()
+        self.tls_log_minutes = c.getint('tls_log_minutes')
+        self.tls_sigalg_warn = c.getint('tls_sigalg_warn')
         self.server = self.external = None
         if self.check_outbound or self.check_inbound:
             for sec in ('server', 'external'):
@@ -515,12 +531,169 @@ def check_queue(cfg):
     return Result('Warteschlange', status, msg)
 
 
+# --------------------------------------------------------------------------
+# Postfix-TLS (Standardzertifikat ohne SNI)
+# --------------------------------------------------------------------------
+# Postfix wählt das Zertifikat auf Port 25 nach dem SNI-Namen des Absenders. Schickt
+# der keinen (oder einen unbekannten) Namen, gilt das Standard-Zertifikat aus
+# smtpd_tls_chain_files. Zeigt das auf fehlende Dateien (z. B. gelöschtes Snakeoil),
+# scheitert der Handshake - der Absender bekommt keine Zustellung und der eigene Server
+# keinen Bounce. Dieser Check findet das, bevor es jemand merkt.
+
+_LOCAL_HOSTS = ('localhost', '::1')
+_LOG_CANDIDATES = ('/var/log/maillog', '/var/log/mail.log', '/var/log/postfix.log')
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'))}
+
+
+def _is_local(host):
+    return host in _LOCAL_HOSTS or host.startswith('127.')
+
+
+def postfix_chain_files(timeout=10):
+    """Dateien aus smtpd_tls_chain_files (leer, wenn postconf fehlt oder nichts gesetzt ist)."""
+    exe = shutil.which('postconf') or ('/usr/sbin/postconf' if os.path.exists('/usr/sbin/postconf') else None)
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, '-h', 'smtpd_tls_chain_files'], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=timeout,
+                             universal_newlines=True).stdout
+    except Exception:
+        return None
+    return [p for p in re.split(r'[,\s]+', out.strip()) if p]
+
+
+def tls_handshake_no_sni(host, port, timeout):
+    """STARTTLS-Handshake OHNE SNI per openssl. Liefert (Fehlertext|None, Tage|None, verify_ok|None)."""
+    exe = shutil.which('openssl')
+    if not exe:
+        return 'openssl nicht gefunden', None, None
+    flavor = ['-starttls', 'smtp'] if port in (25, 587) else []
+    try:
+        p = subprocess.run([exe, 's_client', '-connect', '%s:%d' % (host, port), '-noservername']
+                           + flavor + ['-showcerts'],
+                          input='QUIT\r\n', stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          timeout=timeout, universal_newlines=True)
+    except Exception as e:
+        return 'openssl s_client fehlgeschlagen: %s' % _err(e), None, None
+    out = p.stdout
+    m = re.search(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', out, re.S)
+    if not m:
+        errs = [l.strip() for l in out.splitlines() if re.search(r'error|alert|refused|timed? ?out|unable', l, re.I)]
+        return 'Handshake ohne SNI liefert kein Zertifikat%s' % (
+            ' (%s)' % errs[-1][:160] if errs else ''), None, None
+    days = None
+    try:
+        e = subprocess.run([exe, 'x509', '-noout', '-enddate'], input=m.group(0), stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=timeout, universal_newlines=True).stdout
+        mm_ = re.search(r'notAfter=(.+)', e)
+        if mm_:
+            days = (ssl.cert_time_to_seconds(mm_.group(1).strip()) - time.time()) / 86400.0
+    except Exception:
+        pass
+    v = re.search(r'Verify return code: (\d+)', out)
+    return None, days, (int(v.group(1)) == 0) if v else None
+
+
+def _log_time(line, now):
+    """Zeitstempel einer Postfix-Logzeile (Syslog 'Oct 14 16:56:01' oder ISO 8601) als Epoche."""
+    m = re.match(r'(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)', line)
+    try:
+        if m:
+            return time.mktime(tuple(int(x) for x in m.groups()) + (0, 0, -1))
+        m = re.match(r'([A-Z][a-z]{2})\s+(\d+)\s+(\d\d):(\d\d):(\d\d)', line)
+        if m and m.group(1) in _MONTHS:
+            lt = time.localtime(now)
+            t = time.mktime((lt.tm_year, _MONTHS[m.group(1)], int(m.group(2)), int(m.group(3)),
+                             int(m.group(4)), int(m.group(5)), 0, 0, -1))
+            return t - 365 * 86400 if t > now + 86400 else t   # Jahreswechsel
+    except (ValueError, OverflowError):
+        pass
+    return None
+
+
+def scan_tls_log(path, minutes, now=None, tail_bytes=8 * 1024 * 1024):
+    """Zählt TLS-Probleme der letzten `minutes` Minuten: (chain_file_errors, sigalg_errors)."""
+    now = now or time.time()
+    chain = sigalg = 0
+    with open(path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - tail_bytes))
+        for raw in f:
+            if b'chain file' not in raw and b'no suitable signature algorithm' not in raw:
+                continue
+            line = raw.decode('utf-8', 'replace')
+            t = _log_time(line, now)
+            if t is None or now - t > minutes * 60:
+                continue
+            if 'error opening chain file' in line:
+                chain += 1
+            elif 'no suitable signature algorithm' in line:
+                sigalg += 1
+    return chain, sigalg
+
+
+def check_postfix_tls(cfg):
+    name = 'Postfix-TLS'
+    host, port = cfg.tls_host, cfg.tls_port
+    issues, notes = [], []   # (Status, Text)
+
+    def add(status, text):
+        issues.append((status, text))
+
+    local = _is_local(host)
+    if local:
+        files = postfix_chain_files(cfg.timeout)
+        if files is None:
+            notes.append('postconf nicht gefunden – Dateiprüfung übersprungen')
+        else:
+            bad = [p for p in files if not (os.path.isfile(p) and os.access(p, os.R_OK))]
+            if bad:
+                add(FAIL, 'smtpd_tls_chain_files: fehlt/nicht lesbar: %s' % ', '.join(bad))
+            elif files:
+                notes.append('%d Zertifikatsdatei(en) vorhanden' % len(files))
+    err, days, verified = tls_handshake_no_sni(host, port, cfg.timeout)
+    if err:
+        add(FAIL, err)
+    else:
+        if days is not None:
+            if days < cfg.tls_crit_days:
+                add(FAIL, 'Zertifikat läuft in %d Tag(en) ab' % max(0, int(days)) if days >= 0 else 'Zertifikat abgelaufen')
+            elif days < cfg.tls_warn_days:
+                add(WARN, 'Zertifikat läuft in %d Tagen ab' % days)
+            else:
+                notes.append('Zertifikat noch %d Tage gültig' % days)
+        if verified is False:
+            add(WARN, 'Zertifikatskette lässt sich nicht verifizieren')
+    if local:
+        logs = [cfg.tls_log] if cfg.tls_log else [p for p in _LOG_CANDIDATES if os.path.isfile(p)]
+        for path in logs[:1]:
+            try:
+                chain, sigalg = scan_tls_log(path, cfg.tls_log_minutes)
+            except OSError as e:
+                notes.append('Log %s nicht lesbar (%s)' % (path, e.strerror or e))
+                continue
+            if chain:
+                add(FAIL, '%dx „error opening chain file“ im Log der letzten %d Min.' % (chain, cfg.tls_log_minutes))
+            if sigalg > cfg.tls_sigalg_warn:
+                add(WARN, '%dx „no suitable signature algorithm“ in %d Min. (Schwelle %d)' % (
+                    sigalg, cfg.tls_log_minutes, cfg.tls_sigalg_warn))
+    if not issues:
+        return Result(name, OK, '; '.join(notes) or 'Handshake ohne SNI ok')
+    status = FAIL if any(s == FAIL for s, _ in issues) else WARN
+    return Result(name, status, '; '.join(t for _, t in issues))
+
+
 def run_checks(cfg, log):
     results = [check_port(p, cfg) for p in cfg.ports]
     for r in results:
         log('%s: %s' % (r.name, r.message))
     if cfg.check_queue:
         results.append(check_queue(cfg))
+        log('%s: %s' % (results[-1].name, results[-1].message))
+    if cfg.check_tls:
+        results.append(check_postfix_tls(cfg))
         log('%s: %s' % (results[-1].name, results[-1].message))
     results.extend(check_roundtrips(cfg, log))
     return results

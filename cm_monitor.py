@@ -37,6 +37,11 @@ FIELDS = [
     ('checks', 'queue', 'bool', True),
     ('checks', 'queue_warn', 'int', 20),
     ('checks', 'queue_fail', 'int', 100),
+    ('checks', 'tls', 'bool', True),
+    ('checks', 'tls_host', 'str', '127.0.0.1'),
+    ('checks', 'tls_port', 'int', 25),
+    ('checks', 'tls_warn_days', 'int', 21),
+    ('checks', 'tls_crit_days', 'int', 7),
 ]
 for _acc in ('server', 'external'):
     FIELDS += [
@@ -61,6 +66,8 @@ INT_RANGES = {
     'checks.cert_warn_days': (0, 365),
     'checks.queue_warn': (1, 100000),
     'checks.queue_fail': (1, 100000),
+    'checks.tls_warn_days': (1, 365),
+    'checks.tls_crit_days': (0, 365),
 }
 
 

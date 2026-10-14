@@ -159,6 +159,11 @@
         <label class="check"><input type="checkbox" name="checks.queue"> Postfix-Warteschlange prüfen</label>
         <label>Warteschlange: Warnung ab <input name="checks.queue_warn" type="number" min="1"></label>
         <label>Warteschlange: Störung ab <input name="checks.queue_fail" type="number" min="1"></label>
+        <label class="check wide"><input type="checkbox" name="checks.tls"> Postfix-TLS prüfen (Standardzertifikat ohne SNI)<small>Prüft <code>smtpd_tls_chain_files</code>, einen STARTTLS-Handshake ohne Servernamen, die Restlaufzeit und TLS-Fehler im Mail-Log. Fängt z. B. gelöschte Snakeoil-Zertifikate ab, bei denen Absender ohne SNI still scheitern.</small></label>
+        <label>TLS-Host <input name="checks.tls_host" placeholder="127.0.0.1"><small>Nicht lokal = Datei- und Log-Prüfung entfallen.</small></label>
+        <label>TLS-Port <input name="checks.tls_port" type="number" min="1" max="65535"></label>
+        <label>TLS: Warnung ab … Tagen Restlaufzeit <input name="checks.tls_warn_days" type="number" min="1"></label>
+        <label>TLS: Störung ab … Tagen Restlaufzeit <input name="checks.tls_crit_days" type="number" min="0"></label>
       </div>
 
       <h3>Benachrichtigung</h3>

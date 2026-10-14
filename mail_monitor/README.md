@@ -15,6 +15,7 @@ Zertifikat …). Darum verschickt der Monitor bei jedem Lauf echte Testmails:
 | Ports         | Verbindung + Begrüßung (220 / `* OK`) auf z. B. 25, 587, 993, inkl. STARTTLS   |
 | Zertifikate   | Warnung, wenn ein TLS-Zertifikat bald abläuft oder ungültig ist               |
 | Warteschlange | Anzahl Mails in `postqueue -p` (hängende Mails), nur auf dem Mailserver       |
+| Postfix-TLS   | Standardzertifikat ohne SNI: `smtpd_tls_chain_files` vorhanden, STARTTLS-Handshake ohne Servernamen, Restlaufzeit, Kettenprüfung, TLS-Fehler im Mail-Log (`tls = yes`) |
 
 Testmails werden nach dem Nachweis wieder gelöscht. Nur
 Python-Standardbibliothek, keine Installation nötig.
